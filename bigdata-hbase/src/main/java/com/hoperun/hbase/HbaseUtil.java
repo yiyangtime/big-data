@@ -16,7 +16,6 @@ import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
@@ -28,7 +27,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 public class HbaseUtil
 {
     public static Configuration config;
-
+    public static Admin admin;
     static
     {
 	config = HBaseConfiguration.create();
@@ -37,13 +36,20 @@ public class HbaseUtil
 	// Admin admin;
 
 	// 取得一个数据库连接的配置参数对象
-	
+
 	// 设置连接参数：HBase数据库所在的主机IP
-	config.set("zookeeper.znode.parent","/hbase");
+	config.set("zookeeper.znode.parent", "/hbase");
 	config.set("hbase.zookeeper.quorum", "10.20.28.146");
 	// 设置连接参数：HBase数据库使用的端口
 	config.set("hbase.zookeeper.property.clientPort", "2181");
-//	config.set("hbase.master", "10.20.28.146:60010");
+	// config.set("hbase.master", "10.20.28.146:60010");
+	try
+	{
+	    admin = ConnectionFactory.createConnection(config).getAdmin();
+	} catch (IOException e)
+	{
+	    e.printStackTrace();
+	}
     }
 
     /**
@@ -55,13 +61,13 @@ public class HbaseUtil
      *            列族
      * @return
      */
+    @SuppressWarnings("deprecation")
     public boolean createTable(String tableName, String[] columns)
     {
 	boolean result = false;
 	try
 	{
-	    HBaseAdmin Hbaseadmin = new HBaseAdmin(config);
-	    if (Hbaseadmin.tableExists(tableName))
+	    if (admin.listTableNames(tableName) != null)
 	    {
 		System.out.println("表已经存在！");
 		result = false;
@@ -72,7 +78,7 @@ public class HbaseUtil
 		{
 		    desc.addFamily(new HColumnDescriptor(column));
 		}
-		Hbaseadmin.createTable(desc);
+		admin.createTable(desc);
 		System.out.println("表创建成功！");
 		result = true;
 	    }
@@ -81,9 +87,7 @@ public class HbaseUtil
 	    result = false;
 	    e.printStackTrace();
 	}
-
 	return result;
-
     }
 
     /**
@@ -100,7 +104,6 @@ public class HbaseUtil
 	    System.out.println("---------------清空表 START-----------------");
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf(tabName);
-	    Admin admin = new HBaseAdmin(config);
 	    // 设置表状态为无效
 	    admin.disableTable(tableName);
 	    // 清空指定表的数据
@@ -127,7 +130,6 @@ public class HbaseUtil
 	{
 	    System.out.println("---------------删除表 START-----------------");
 	    // 设置表状态为无效
-	    Admin admin = new HBaseAdmin(config);
 	    admin.disableTable(TableName.valueOf(tabName));
 	    // 删除指定的数据表
 	    admin.deleteTable(TableName.valueOf(tabName));
@@ -137,8 +139,7 @@ public class HbaseUtil
 	{
 	    e.printStackTrace();
 	}
-
-	return true;
+	return result;
     }
 
     /**
@@ -186,7 +187,6 @@ public class HbaseUtil
 	try
 	{
 	    System.out.println("---------------新建列族 START-----------------");
-	    Admin admin = new HBaseAdmin(config);
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf("t_book");
 	    // 创建列族对象
@@ -216,7 +216,6 @@ public class HbaseUtil
 	try
 	{
 	    System.out.println("---------------删除列族 START-----------------");
-	    Admin admin = new HBaseAdmin(config);
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf(tabName);
 	    // 删除指定数据表中的指定列族
@@ -243,7 +242,6 @@ public class HbaseUtil
 	    Table table = connection.getTable(TableName.valueOf(tabName));
 	    // 将数据集合插入到数据库
 	    table.put(putList);
-
 	    System.out.println("---------------插入数据 END-----------------");
 	} catch (Exception e)
 	{
@@ -262,7 +260,6 @@ public class HbaseUtil
 	try
 	{
 	    System.out.println("---------------查询整表数据 START-----------------");
-
 	    // 取得数据表对象
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    Table table = connection.getTable(TableName.valueOf(tabName));
@@ -384,27 +381,30 @@ public class HbaseUtil
 	return resultScanner;
     }
 
-    public static void main(String[] args) throws IOException {
-        //第一步，设置HBsae配置信息
-        Configuration configuration = HBaseConfiguration.create();    
-        //注意。这里这行目前没有注释掉的，这行和问题3有关系  是要根据自己zookeeper.znode.parent的配置信息进行修改。
-       configuration.set("zookeeper.znode.parent","/hbase"); //与 hbase-site-xml里面的配置信息 zookeeper.znode.parent 一致  
-        configuration.set("hbase.zookeeper.quorum","10.20.28.146");  //hbase 服务地址
-        configuration.set("hbase.zookeeper.property.clientPort","2181"); //端口号
-        //这里使用的是接口Admin   该接口有一个实现类HBaseAdmin   也可以直接使用这个实现类
-        // HBaseAdmin baseAdmin = new HBaseAdmin(configuration);
-        Admin admin = ConnectionFactory.createConnection(configuration).getAdmin();
-        if(admin !=null){
-            try {
-                //获取到数据库所有表信息
-                HTableDescriptor[] allTable = admin.listTables();
-                for (HTableDescriptor hTableDescriptor : allTable) {
-                    System.out.println(hTableDescriptor.getNameAsString());
-                }
-            }catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
+    public static void main(String[] args) throws IOException
+    {
+	// 第一步，设置HBsae配置信息
+	Configuration configuration = HBaseConfiguration.create();
+	// 注意。这里这行目前没有注释掉的，这行和问题3有关系 是要根据自己zookeeper.znode.parent的配置信息进行修改。
+	configuration.set("zookeeper.znode.parent", "/hbase"); 
+	configuration.set("hbase.zookeeper.quorum", "10.20.28.146");
+	configuration.set("hbase.zookeeper.property.clientPort", "2181");
+	Admin admin = ConnectionFactory.createConnection(configuration).getAdmin();
+	if (admin != null)
+	{
+	    try
+	    {
+		// 获取到数据库所有表信息
+		HTableDescriptor[] allTable = admin.listTables();
+		for (HTableDescriptor hTableDescriptor : allTable)
+		{
+		    System.out.println(hTableDescriptor.getNameAsString());
+		}
+	    } catch (IOException e)
+	    {
+		e.printStackTrace();
+	    }
+	}
     }
 
 }

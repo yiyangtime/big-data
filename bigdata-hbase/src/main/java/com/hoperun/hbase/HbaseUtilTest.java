@@ -19,10 +19,8 @@ public class HbaseUtilTest {
     @Test
     public void insertTest(){
         HbaseUtil hu=new HbaseUtil();
-        // 需要插入数据库的数据集合
         List<Put> putList = new ArrayList<Put>();
         Put put;
-        // 生成数据集合
         for(int i = 0; i < 2; i++){
             put = new Put(Bytes.toBytes("row" + i));
             put.addColumn(Bytes.toBytes("id"), null, Bytes.toBytes("id" + i));
