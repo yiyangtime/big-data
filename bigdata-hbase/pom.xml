@@ -4,11 +4,42 @@
 	<groupId>com.hoperun</groupId>
 	<artifactId>bigdata-hbase</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
+	<packaging>jar</packaging>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>2.0.1.RELEASE</version>
+	</parent>
+	<name>bigdata-hbase</name>
+	<url>http://maven.apache.org</url>
+	
+	<!-- UTF-8编码和JDK版本 -->
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<java.version>1.8</java.version>
 	</properties>
 
 	<dependencies>
+		<!-- web 添加了 tomcat 和 Spring MVC -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+
+		<!-- 添加热加载工具 -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-devtools</artifactId>
+			<optional>true</optional>
+		</dependency>
+
+		<!-- 添加ConfigurationProperties依赖 -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-configuration-processor</artifactId>
+			<optional>true</optional>
+		</dependency>
 		<dependency>
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-common</artifactId>
@@ -42,4 +73,24 @@
 			<version>1.8</version>
 		</dependency>
 	</dependencies>
+	<build>
+		<finalName>hbase</finalName>
+		<plugins>
+			<!-- 打包成jar包 -->
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<includeSystemScope>true</includeSystemScope>
+					<mainClass>com.hoperun.hbase.Application</mainClass>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+	<repositories>
+		<repository>
+			<id>spring-milestone</id>
+			<url>http://repo.spring.io/libs-release</url>
+		</repository>
+	</repositories>
 </project>

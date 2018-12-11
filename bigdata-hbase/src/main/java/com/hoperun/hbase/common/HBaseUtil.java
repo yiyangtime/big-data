@@ -1,7 +1,8 @@
-package com.hoperun.hbase;
+package com.hoperun.hbase.common;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -23,29 +24,113 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
-public class HbaseUtil
+import com.hoperun.hbase.config.HBaseConfig;
+
+@Component
+public class HBaseUtil
 {
-    public static Configuration config;
-    public static Admin admin;
-    static
+    private final static Logger LOGGER = LoggerFactory.getLogger(HBaseUtil.class);
+    public final static String zookeeperZnodeParent = "zookeeper.znode.parent";
+    public final static String hbaseZookeeperQuorum = "hbase.zookeeper.quorum";
+    public final static String hbaseZookeeperPropertyClientPort = "hbase.zookeeper.property.clientPort";
+    public final static String hbaseMaster = "hbase.master";
+
+    @Autowired
+    private static HBaseConfig hBaseConfig;
+
+    private static Configuration config;
+    // 设置连接池
+    private static ExecutorService pool;
+    private static Connection connection;
+    private static Admin admin = null;
+
+    public void init()
     {
 	config = HBaseConfiguration.create();
+	config.set(zookeeperZnodeParent, hBaseConfig.getZookeeperZnodeParent());
+	config.set(hbaseZookeeperPropertyClientPort, hBaseConfig.getHbaseZookeeperPropertyClientPort());
+	config.set(hbaseZookeeperQuorum, hBaseConfig.getHbaseZookeeperQuorum());
+    }
 
-	// 数据库元数据操作对象
-	// Admin admin;
-
-	// 取得一个数据库连接的配置参数对象
-
-	// 设置连接参数：HBase数据库所在的主机IP
-	config.set("zookeeper.znode.parent", "/hbase");
-	config.set("hbase.zookeeper.quorum", "10.20.28.146");
-	// 设置连接参数：HBase数据库使用的端口
-	config.set("hbase.zookeeper.property.clientPort", "2181");
-	// config.set("hbase.master", "10.20.28.146:60010");
+    /**
+     * 获得链接
+     * 
+     * @return
+     */
+    public static synchronized Connection getConnection()
+    {
 	try
 	{
-	    admin = ConnectionFactory.createConnection(config).getAdmin();
+	    if (connection == null || connection.isClosed())
+	    {
+		connection = ConnectionFactory.createConnection(config, pool);
+	    }
+	} catch (IOException e)
+	{
+	    LOGGER.error("HBase 建立链接失败 ", e);
+	}
+	return connection;
+    }
+
+    /**
+     * 根据表名，判断表是否存在
+     * 
+     * @param tableName
+     *            表名
+     * @return true 存在 ，false 不存在
+     * @throws IOException
+     */
+    public static boolean tableExists(String tableName) throws IOException
+    {
+	Connection connection = getConnection();
+	Admin admin = connection.getAdmin();
+	TableName name = TableName.valueOf(tableName);
+	LOGGER.debug("---" + name);
+	// 判断表是否存在
+	boolean bool = admin.tableExists(name);
+	LOGGER.debug(tableName + " exists? " + bool);
+	return bool;
+    }
+
+    /**
+     * 创建带表空间的表
+     * 
+     * @param nameSpace
+     * @param tableName
+     * @param family
+     * @param splitKeys
+     */
+    public static void createTable(String nameSpace, String tableName, String family, byte[][] splitKeys)
+    {
+	try
+	{
+	    TableName tName = TableName.valueOf(nameSpace, tableName);
+	    // 如果表存在，删除表
+	    if (admin.tableExists(tName))
+	    {
+		admin.disableTable(tName);
+		admin.deleteTable(tName);
+	    } else
+	    {
+
+		HTableDescriptor tableDesc = new HTableDescriptor(tName);
+		HColumnDescriptor colDesc = new HColumnDescriptor(family.getBytes());
+		// 1个版本
+		colDesc.setMaxVersions(1);
+		// 开启内存缓存
+		colDesc.setInMemory(true);
+		tableDesc.addFamily(colDesc);
+		// 直接创建表
+		admin.createTable(tableDesc);
+		// 创建表，添加预分区，避免热点写,若不指定splitKeys为空即可
+		// admin.createTable(tableDesc, splitKeys);
+
+	    }
 	} catch (IOException e)
 	{
 	    e.printStackTrace();
@@ -60,16 +145,18 @@ public class HbaseUtil
      * @param columns
      *            列族
      * @return
+     * @throws IOException
      */
     @SuppressWarnings("deprecation")
-    public boolean createTable(String tableName, String[] columns)
+    public boolean createTable(String tableName, String[] columns) throws IOException
     {
+	Admin admin = connection.getAdmin();
 	boolean result = false;
 	try
 	{
 	    if (admin.listTableNames(tableName) != null)
 	    {
-		System.out.println("表已经存在！");
+		LOGGER.error("表已经存在！");
 		result = false;
 	    } else
 	    {
@@ -79,13 +166,13 @@ public class HbaseUtil
 		    desc.addFamily(new HColumnDescriptor(column));
 		}
 		admin.createTable(desc);
-		System.out.println("表创建成功！");
+		LOGGER.debug("表创建成功！");
 		result = true;
 	    }
 	} catch (Exception e)
 	{
 	    result = false;
-	    e.printStackTrace();
+	    LOGGER.error("表创建异常!");
 	}
 	return result;
     }
@@ -95,24 +182,26 @@ public class HbaseUtil
      * 
      * @param tabName
      * @return true 表示成功
+     * @throws IOException
      */
-    public boolean truncateTable(String tabName)
+    public boolean truncateTable(String tabName) throws IOException
     {
+	Admin admin = connection.getAdmin();
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------清空表 START-----------------");
+	    LOGGER.debug("清空表 START");
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf(tabName);
 	    // 设置表状态为无效
 	    admin.disableTable(tableName);
 	    // 清空指定表的数据
 	    admin.truncateTable(tableName, true);
-	    System.out.println("---------------清空表 End-----------------");
+	    LOGGER.debug("清空表 End");
 	    result = true;
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("清空表异常！");
 	}
 	return result;
     }
@@ -122,22 +211,24 @@ public class HbaseUtil
      * 
      * @param tabName
      * @return true 删除成功;
+     * @throws IOException
      */
-    public boolean deleteTable(String tabName)
+    public boolean deleteTable(String tabName) throws IOException
     {
+	Admin admin = connection.getAdmin();
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------删除表 START-----------------");
+	    LOGGER.debug("删除表 START");
 	    // 设置表状态为无效
 	    admin.disableTable(TableName.valueOf(tabName));
 	    // 删除指定的数据表
 	    admin.deleteTable(TableName.valueOf(tabName));
-	    System.out.println("---------------删除表 End-----------------");
+	    LOGGER.debug("删除表 End");
 	    result = true;
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("删除表异常！");
 	}
 	return result;
     }
@@ -155,7 +246,7 @@ public class HbaseUtil
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------删除行 START-----------------");
+	    LOGGER.debug("删除行 START");
 	    // 取得待操作的数据表对象
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    Table table = connection.getTable(TableName.valueOf(tabName));
@@ -163,12 +254,12 @@ public class HbaseUtil
 	    Delete delete = new Delete(Bytes.toBytes(rowkey));
 	    // 执行删除操作
 	    table.delete(delete);
-	    System.out.println("---------------删除行 End-----------------");
+	    LOGGER.debug("删除行 End");
 	    result = true;
 	} catch (Exception e)
 	{
 	    result = false;
-	    e.printStackTrace();
+	    LOGGER.error("删除行异常!");
 	}
 	return result;
     }
@@ -181,24 +272,25 @@ public class HbaseUtil
      * @return
      * @throws IOException
      */
-    public boolean addColumnFamily(String tabName, String fName)
+    public boolean addColumnFamily(String tabName, String fName) throws IOException
     {
+	Admin admin = connection.getAdmin();
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------新建列族 START-----------------");
+	    LOGGER.debug("新建列族 START");
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf("t_book");
 	    // 创建列族对象
 	    HColumnDescriptor columnDescriptor = new HColumnDescriptor(fName);
 	    // 将新创建的列族添加到指定的数据表
 	    admin.addColumn(tableName, columnDescriptor);
-	    System.out.println("---------------新建列族 END-----------------");
+	    LOGGER.debug("新建列族 END");
 	    result = true;
 	} catch (Exception e)
 	{
 	    result = false;
-	    e.printStackTrace();
+	    LOGGER.error("新建列族异常!");
 	}
 	return result;
     }
@@ -209,21 +301,23 @@ public class HbaseUtil
      * @param tabName
      * @param fname
      * @return
+     * @throws IOException
      */
-    public boolean deleteColumnFamily(String tabName, String fname)
+    public boolean deleteColumnFamily(String tabName, String fname) throws IOException
     {
+	Admin admin = connection.getAdmin();
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------删除列族 START-----------------");
+	    LOGGER.debug("删除列族 START");
 	    // 取得目标数据表的表名对象
 	    TableName tableName = TableName.valueOf(tabName);
 	    // 删除指定数据表中的指定列族
 	    admin.deleteColumn(tableName, fname.getBytes());
-	    System.out.println("---------------删除列族 END-----------------");
+	    LOGGER.debug("删除列族 END");
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("删除列族异常!");
 	}
 	return result;
     }
@@ -236,16 +330,16 @@ public class HbaseUtil
 	boolean result = false;
 	try
 	{
-	    System.out.println("---------------插入数据 START-----------------");
+	    LOGGER.debug("插入数据 START");
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    // 取得一个数据表对象
 	    Table table = connection.getTable(TableName.valueOf(tabName));
 	    // 将数据集合插入到数据库
 	    table.put(putList);
-	    System.out.println("---------------插入数据 END-----------------");
+	    LOGGER.debug("插入数据 END");
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("插入数据异常!");
 	}
 	return result;
     }
@@ -259,7 +353,7 @@ public class HbaseUtil
 	ResultScanner resultx = null;
 	try
 	{
-	    System.out.println("---------------查询整表数据 START-----------------");
+	    LOGGER.debug("查询整表数据 START");
 	    // 取得数据表对象
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    Table table = connection.getTable(TableName.valueOf(tabName));
@@ -269,7 +363,7 @@ public class HbaseUtil
 	    for (Result result : resultx)
 	    {
 		byte[] row = result.getRow();
-		System.out.println("row key is:" + new String(row));
+		LOGGER.debug("row key is:" + new String(row));
 		List<Cell> listCells = result.listCells();
 		for (Cell cell : listCells)
 		{
@@ -280,11 +374,10 @@ public class HbaseUtil
 			    + new String(valueArray));
 		}
 	    }
-	    System.out.println("---------------查询整表数据 END-----------------");
-
+	    LOGGER.debug("查询整表数据 END");
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("查询整表数据异常!");
 	}
 	return resultx;
     }
@@ -306,7 +399,7 @@ public class HbaseUtil
 	    {
 		return null;
 	    }
-	    System.out.println("---------------按行键查询表数据 START-----------------");
+	    LOGGER.debug("按行键查询表数据 START");
 	    // 取得数据表对象
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    Table table = connection.getTable(TableName.valueOf(tabName));
@@ -315,7 +408,7 @@ public class HbaseUtil
 	    // 按行键查询数据
 	    result = table.get(get);
 	    byte[] row = result.getRow();
-	    System.out.println("row key is:" + new String(row));
+	    LOGGER.debug("row key is:" + new String(row));
 	    List<Cell> listCells = result.listCells();
 	    for (Cell cell : listCells)
 	    {
@@ -325,10 +418,10 @@ public class HbaseUtil
 		System.out.println("row value is:" + new String(familyArray) + new String(qualifierArray)
 			+ new String(valueArray));
 	    }
-	    System.out.println("---------------按行键查询表数据 END-----------------");
+	    LOGGER.debug("按行键查询表数据 END");
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("按行键查询表数据异常!");
 	}
 	return result;
 
@@ -336,75 +429,64 @@ public class HbaseUtil
 
     /**
      * 按条件查询表数据
+     * 
+     * @param tabName
+     * @param filter
+     * @return
      */
-
     public ResultScanner queryTableByCondition(String tabName, Filter filter)
     {
 	ResultScanner resultScanner = null;
 	try
 	{
-	    System.out.println("---------------按条件查询表数据 START-----------------");
+	    LOGGER.debug("按条件查询表数据 START");
 	    // 取得数据表对象
 	    Connection connection = ConnectionFactory.createConnection(config);
 	    Table table = connection.getTable(TableName.valueOf(tabName));
-	    // 创建一个查询过滤器
-	    // Filter filter = new
-	    // SingleColumnValueFilter(Bytes.toBytes("base"),
-	    // Bytes.toBytes("name"), CompareOp.EQUAL,
-	    // Bytes.toBytes("bookName6"));
 	    // 创建一个数据表扫描器
 	    Scan scan = new Scan();
 	    // 将查询过滤器加入到数据表扫描器对象
 	    scan.setFilter(filter);
 	    // 执行查询操作，并取得查询结果
 	    resultScanner = table.getScanner(scan);
-
 	    // 循环输出查询结果
 	    for (Result result : resultScanner)
 	    {
 		byte[] row = result.getRow();
-		System.out.println("row key is:" + new String(row));
+		LOGGER.debug("row key is:" + new String(row));
 		List<Cell> listCells = result.listCells();
 		for (Cell cell : listCells)
 		{
-		    System.out.println("family:" + Bytes.toString(CellUtil.cloneFamily(cell)));
-		    System.out.println("qualifier:" + Bytes.toString(CellUtil.cloneQualifier(cell)));
-		    System.out.println("value:" + Bytes.toString(CellUtil.cloneValue(cell)));
+		    LOGGER.debug("family:" + Bytes.toString(CellUtil.cloneFamily(cell)));
+		    LOGGER.debug("qualifier:" + Bytes.toString(CellUtil.cloneQualifier(cell)));
+		    LOGGER.debug("value:" + Bytes.toString(CellUtil.cloneValue(cell)));
 		}
 	    }
-
-	    System.out.println("---------------按条件查询表数据 END-----------------");
+	    LOGGER.debug("按条件查询表数据 END");
 	} catch (Exception e)
 	{
-	    e.printStackTrace();
+	    LOGGER.error("按条件查询表数据异常!");
 	}
 	return resultScanner;
     }
 
-    public static void main(String[] args) throws IOException
+    /**
+     * 列出数据库中所有表
+     * 
+     * @return
+     * @throws IOException
+     */
+    public HTableDescriptor[] showTables() throws IOException
     {
-	// 第一步，设置HBsae配置信息
-	Configuration configuration = HBaseConfiguration.create();
-	// 注意。这里这行目前没有注释掉的，这行和问题3有关系 是要根据自己zookeeper.znode.parent的配置信息进行修改。
-	configuration.set("zookeeper.znode.parent", "/hbase"); 
-	configuration.set("hbase.zookeeper.quorum", "10.20.28.146");
-	configuration.set("hbase.zookeeper.property.clientPort", "2181");
-	Admin admin = ConnectionFactory.createConnection(configuration).getAdmin();
-	if (admin != null)
+	Admin admin = connection.getAdmin();
+	// 获取数据库中表的集合
+	HTableDescriptor[] tableDescriptor = admin.listTables();
+	// 遍历打印所有表名
+	for (int i = 0; i < tableDescriptor.length; i++)
 	{
-	    try
-	    {
-		// 获取到数据库所有表信息
-		HTableDescriptor[] allTable = admin.listTables();
-		for (HTableDescriptor hTableDescriptor : allTable)
-		{
-		    System.out.println(hTableDescriptor.getNameAsString());
-		}
-	    } catch (IOException e)
-	    {
-		e.printStackTrace();
-	    }
+	    System.out.println(tableDescriptor[i].getNameAsString());
 	}
+	return tableDescriptor;
     }
 
 }
